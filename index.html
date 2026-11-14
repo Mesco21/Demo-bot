@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Запись в салон</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg: var(--tg-theme-bg-color, #ffffff);
+    --text: var(--tg-theme-text-color, #1c1c1e);
+    --hint: var(--tg-theme-hint-color, #8e8e93);
+    --accent: var(--tg-theme-button-color, #2481cc);
+    --accent-text: var(--tg-theme-button-text-color, #ffffff);
+    --card: var(--tg-theme-secondary-bg-color, #f2f2f7);
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body { margin: 0; padding: 16px 16px 96px; background: var(--bg); color: var(--text);
+         font: 16px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: var(--hint); margin: 0 0 20px; font-size: 14px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--hint);
+       margin: 22px 0 10px; font-weight: 600; }
+  .services { display: grid; gap: 8px; }
+  .service { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 14px;
+             background: var(--card); border: 2px solid transparent; cursor: pointer; }
+  .service.sel { border-color: var(--accent); }
+  .service .ico { font-size: 24px; }
+  .service .name { font-weight: 600; }
+  .service .meta { color: var(--hint); font-size: 13px; }
+  .service .price { margin-left: auto; font-weight: 600; white-space: nowrap; }
+  .days { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; scrollbar-width: none; }
+  .days::-webkit-scrollbar { display: none; }
+  .day { flex: 0 0 auto; width: 58px; padding: 10px 0; text-align: center; border-radius: 14px;
+         background: var(--card); border: 2px solid transparent; cursor: pointer; }
+  .day .dow { font-size: 12px; color: var(--hint); }
+  .day .num { font-size: 20px; font-weight: 600; }
+  .day.sel { border-color: var(--accent); }
+  .slots { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  .slot { padding: 10px 0; text-align: center; border-radius: 12px; background: var(--card);
+          border: 2px solid transparent; cursor: pointer; font-weight: 500; }
+  .slot.sel { border-color: var(--accent); }
+  .slot.off { opacity: .35; text-decoration: line-through; cursor: not-allowed; }
+  .empty { color: var(--hint); font-size: 14px; }
+  .summary { margin-top: 22px; padding: 14px; border-radius: 14px; background: var(--card); display: none; }
+  .summary.show { display: block; }
+  .summary b { font-weight: 600; }
+  #cta { position: fixed; left: 16px; right: 16px; bottom: 16px; padding: 15px; border: 0; border-radius: 14px;
+         background: var(--accent); color: var(--accent-text); font-size: 17px; font-weight: 600; display: none; }
+  #cta.show { display: block; }
+  #demo-out { margin-top: 14px; font: 12px/1.4 ui-monospace, monospace; white-space: pre-wrap; color: var(--hint); }
+</style>
+</head>
+<body>
+  <h1>Запись в салон</h1>
+  <p class="sub">Выберите услугу, день и время</p>
+
+  <h2>Услуга</h2>
+  <div class="services" id="services"></div>
+
+  <h2>Дата</h2>
+  <div class="days" id="days"></div>
+
+  <h2>Время</h2>
+  <div class="slots" id="slots"></div>
+
+  <div class="summary" id="summary"></div>
+  <div id="demo-out"></div>
+  <button id="cta">Записаться</button>
+
+<script>
+const tg = window.Telegram && window.Telegram.WebApp;
+const inTelegram = !!(tg && tg.initData);
+if (tg) { tg.ready(); tg.expand(); }
+
+const SERVICES = [
+  { id: 'cut',      icon: '✂️', name: 'Стрижка',     dur: '60 мин',  price: 1500 },
+  { id: 'color',    icon: '🎨', name: 'Окрашивание', dur: '2–3 часа', price: 4500 },
+  { id: 'manicure', icon: '💅', name: 'Маникюр',     dur: '90 мин',  price: 2000 },
+  { id: 'brows',    icon: '👁️', name: 'Брови',       dur: '40 мин',  price: 1200 },
+];
+const SLOTS = Array.from({ length: 10 }, (_, i) => String(10 + i).padStart(2, '0') + ':00');
+const DOW = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
+const MONTHS = ['января','февраля','марта','апреля','мая','июня','июля','августа','сентября','октября','ноября','декабря'];
+
+// Занятые слоты бот передаёт в адресе: ?busy=2026-11-16T10:00,...
+const busy = new Set((new URLSearchParams(location.search).get('busy') || '').split(',').filter(Boolean));
+
+const pad = n => String(n).padStart(2, '0');
+const iso = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const DAYS = Array.from({ length: 14 }, (_, i) => { const d = new Date(); d.setDate(d.getDate() + i); return d; });
+
+const state = { service: null, date: iso(DAYS[0]), time: null };
+const $ = id => document.getElementById(id);
+
+function slotOff(date, time) {
+  if (busy.has(`${date}T${time}`)) return true;
+  const [h] = time.split(':').map(Number);
+  const now = new Date();
+  return date === iso(now) && h <= now.getHours(); // сегодня прошедшее время недоступно
+}
+
+function renderServices() {
+  $('services').innerHTML = SERVICES.map(s => `
+    <div class="service ${state.service === s.id ? 'sel' : ''}" data-id="${s.id}">
+      <span class="ico">${s.icon}</span>
+      <div><div class="name">${s.name}</div><div class="meta">${s.dur}</div></div>
+      <span class="price">${s.price} ₽</span>
+    </div>`).join('');
+}
+function renderDays() {
+  $('days').innerHTML = DAYS.map(d => `
+    <div class="day ${state.date === iso(d) ? 'sel' : ''}" data-date="${iso(d)}">
+      <div class="dow">${DOW[d.getDay()]}</div><div class="num">${d.getDate()}</div>
+    </div>`).join('');
+}
+function renderSlots() {
+  const free = SLOTS.filter(t => !slotOff(state.date, t));
+  if (!free.length) {
+    $('slots').innerHTML = '<div class="empty" style="grid-column:1/-1">На этот день свободных мест нет — выберите другой.</div>';
+    return;
+  }
+  $('slots').innerHTML = SLOTS.map(t => {
+    const off = slotOff(state.date, t);
+    return `<div class="slot ${off ? 'off' : ''} ${state.time === t ? 'sel' : ''}" data-time="${t}">${t}</div>`;
+  }).join('');
+}
+function renderSummary() {
+  const ready = state.service && state.date && state.time;
+  const box = $('summary');
+  box.classList.toggle('show', !!ready);
+  if (ready) {
+    const s = SERVICES.find(x => x.id === state.service);
+    const [y, m, d] = state.date.split('-').map(Number);
+    box.innerHTML = `<b>${s.name}</b> — ${s.price} ₽<br>${d} ${MONTHS[m - 1]} в ${state.time}`;
+  }
+  if (inTelegram) {
+    ready ? tg.MainButton.setText('Записаться').show() : tg.MainButton.hide();
+  } else {
+    $('cta').classList.toggle('show', !!ready);
+  }
+}
+function renderAll() { renderServices(); renderDays(); renderSlots(); renderSummary(); }
+
+function submit() {
+  const payload = { service: state.service, date: state.date, time: state.time };
+  if (inTelegram) {
+    tg.sendData(JSON.stringify(payload)); // закроет приложение и отправит данные боту
+  } else {
+    $('demo-out').textContent = 'Демо вне Telegram. Боту ушло бы:\n' + JSON.stringify(payload, null, 2);
+  }
+}
+
+$('services').onclick = e => {
+  const el = e.target.closest('.service'); if (!el) return;
+  state.service = el.dataset.id; renderServices(); renderSummary();
+  if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
+};
+$('days').onclick = e => {
+  const el = e.target.closest('.day'); if (!el) return;
+  state.date = el.dataset.date; state.time = null; renderAll();
+};
+$('slots').onclick = e => {
+  const el = e.target.closest('.slot'); if (!el || el.classList.contains('off')) return;
+  state.time = el.dataset.time; renderSlots(); renderSummary();
+};
+$('cta').onclick = submit;
+if (inTelegram) tg.MainButton.onClick(submit);
+
+renderAll();
+</script>
+</body>
+</html>
